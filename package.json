@@ -1,0 +1,28 @@
+{
+  "name": "agent-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=22.19.0",
+    "pnpm": ">=10.17.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @agent-sandbox/pod-server --filter @agent-sandbox/web run dev",
+    "dev:pod": "pnpm --filter @agent-sandbox/pod-server dev",
+    "dev:web": "pnpm --filter @agent-sandbox/web dev",
+    "dev:agent": "pnpm --filter @agent-sandbox/agent dev",
+    "storybook": "pnpm --filter @cortex/ui storybook",
+    "build-storybook": "pnpm --filter @cortex/ui build-storybook",
+
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r --filter @cortex/shared --filter @cortex/ui --filter @cortex/ai-components --filter @agent-sandbox/web --filter @agent-sandbox/agent --filter @agent-sandbox/pod-server run typecheck",
+    "test": "pnpm --filter @agent-sandbox/agent test",
+    "build:agent-image": "bash scripts/build-agent-image.sh",
+    "build:placeholder": "bash scripts/build-placeholder-image.sh",
+    "isolation-check": "bash scripts/isolation-check.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

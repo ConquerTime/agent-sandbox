@@ -1,0 +1,50 @@
+.response [data-streamdown="code-block"] {
+  border-radius: calc(var(--radius) - 4px);
+}
+
+.response [data-streamdown="code-block-body"] {
+  border-top: none;
+}
+
+/* 隐藏代码块 header */
+.response [data-streamdown="code-block-header"] {
+  position: relative;
+  height: 0;
+  padding: 0;
+  border: none;
+}
+
+.response [data-streamdown="code-block-header"] span {
+  display: none;
+}
+
+.response [data-streamdown="code-block-download-button"] {
+  display: none;
+}
+
+.response [data-streamdown="code-block-copy-button"] {
+  position: absolute;
+  top: calc(100% + var(--spacing) * 2);
+  right: calc(var(--spacing) * 2);
+}
+
+.response [data-streamdown="code-block-copy-button"] svg {
+  width: var(--text-base);
+  height: var(--text-base);
+}
+
+/* 修复有序列表数字和标题分行问题：
+   streamdown 的 li 使用 Tailwind [&>p]:inline 类，
+   但该类未被 Tailwind 扫描到（node_modules 不在 @source 中），
+   导致 li 内的 p 保持 block 显示，在 list-style-position:inside 下
+   数字标记和文字换行分离。直接用 CSS 补上缺失的规则。 */
+.response [data-streamdown="list-item"] > p {
+  display: inline;
+}
+
+/* 嵌套列表缩进：streamdown 使用 list-inside 导致嵌套列表无左边距，
+   子列表与父列表齐平，缺少层级感。为 list-item 内的子列表添加缩进。 */
+.response [data-streamdown="list-item"] > [data-streamdown="unordered-list"],
+.response [data-streamdown="list-item"] > [data-streamdown="ordered-list"] {
+  padding-left: 1.5em;
+}

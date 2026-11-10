@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "jsx": "preserve",
+    "module": "ESNext",
+    "noEmit": true,
+    "plugins": [{ "name": "next" }],
+    "allowJs": true,
+    "incremental": true,
+    "noUncheckedIndexedAccess": false,
+    "paths": {
+      "@/*": ["./*"],
+      "@cortex/ui": ["../../packages/ui/src/index.ts"],
+      "@cortex/ui/*": ["../../packages/ui/src/*"],
+      "@cortex/shared": ["../../packages/shared/src/types/ai-chat.ts"],
+      "@cortex/shared/*": ["../../packages/shared/src/*"],
+      "@cortex/ai-components/*": ["../../packages/ai-components/src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

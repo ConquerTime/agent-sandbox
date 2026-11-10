@@ -1,0 +1,23 @@
+{
+  "name": "@cortex/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./types/ai-chat": "./src/types/ai-chat.ts",
+    "./types/ask-user-question": "./src/types/ask-user-question.ts",
+    "./types/mcp": "./src/types/mcp.ts",
+    "./lib/tool": "./src/lib/tool.ts",
+    "./utils/file-validation": "./src/utils/file-validation.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0"
+  },
+  "devDependencies": {
+    "ai": "^6.0.149",
+    "typescript": "^5.9.2"
+  }
+}
