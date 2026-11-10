@@ -2,7 +2,13 @@
 
 import { useChat } from '@ai-sdk/react';
 import type { RushUIDataTypes } from '@cortex/shared/types/ai-chat';
-import { DefaultChatTransport, type UIMessage, type UITools } from 'ai';
+import type { UserQuestionAnswer } from '@cortex/shared/types/ask-user-question';
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+  type UIMessage,
+  type UITools,
+} from 'ai';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChatPanel } from './chat-panel';
 import { PreviewPanel } from './preview-panel';
@@ -10,6 +16,25 @@ import { ProjectSidebar } from './project-sidebar';
 import type { Project } from './types';
 
 type RushMessage = UIMessage<unknown, RushUIDataTypes, UITools>;
+
+function formatAskUserOutput(answers: UserQuestionAnswer[]): {
+  answers: UserQuestionAnswer[];
+  summary: string;
+} {
+  const summary =
+    answers
+      .map((answer) => {
+        if (answer.freeText?.trim()) return answer.freeText.trim();
+        if (answer.selectedLabels.length > 0) {
+          return answer.selectedLabels.join(', ');
+        }
+        return '用户未回答，请自行决定';
+      })
+      .filter(Boolean)
+      .join('\n') || '用户未回答，请自行决定';
+
+  return { answers, summary };
+}
 
 export function SandboxShell() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -41,10 +66,12 @@ export function SandboxShell() {
     });
   }, [selectedId]);
 
-  const { messages, sendMessage, status, setMessages } = useChat<RushMessage>({
-    id: selectedId || 'none',
-    transport,
-  });
+  const { messages, sendMessage, status, setMessages, addToolOutput } =
+    useChat<RushMessage>({
+      id: selectedId || 'none',
+      transport,
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    });
 
   useEffect(() => {
     setMessages([]);
@@ -89,6 +116,24 @@ export function SandboxShell() {
   }, [selectedId, setMessages]);
 
   const selected = projects.find((project) => project.id === selectedId) || null;
+
+  const handleAskUserAnswer = useCallback(
+    ({
+      toolCallId,
+      answers,
+    }: {
+      toolCallId: string;
+      answers: UserQuestionAnswer[];
+    }) => {
+      // Do not await — AI SDK docs warn awaiting can deadlock with sendAutomaticallyWhen.
+      void addToolOutput({
+        tool: 'AskUserQuestion',
+        toolCallId,
+        output: formatAskUserOutput(answers),
+      });
+    },
+    [addToolOutput]
+  );
 
   async function handleCreate() {
     setBusy(true);
@@ -181,8 +226,9 @@ export function SandboxShell() {
           onSend={() => void handleSend()}
           onStopProject={() => void handleStop()}
           onDeleteProject={() => void handleDelete()}
+          onAskUserAnswer={handleAskUserAnswer}
         />
-        <PreviewPanel project={selected} />
+        <PreviewPanel project={selected} chatStatus={status} />
       </div>
     </div>
   );

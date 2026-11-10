@@ -7,7 +7,7 @@ import {
   streamText,
   type UIMessage,
 } from 'ai';
-import { loadMessages, replaceMessages } from './messages.js';
+import { replaceMessages } from './messages.js';
 import { createWorkspaceTools } from './tools.js';
 import { getWorkspaceDir } from './workspace.js';
 
@@ -16,7 +16,9 @@ Your workspace directory is ${getWorkspaceDir()}.
 Use the provided tools to inspect and modify files only inside that workspace.
 Prefer small, focused edits. When creating a web app for preview, keep a simple static or Vite setup on the workspace preview port if asked.
 Do not attempt to access paths outside the workspace.
-When writing or editing files, call the Write / Edit / Read / Bash / Glob / Grep tools by those exact names.`;
+When writing or editing files, call the Write / Edit / Read / Bash / Glob / Grep tools by those exact names.
+Use AskUserQuestion only when a real product or design choice is required before you can continue. Ask a single clear question with concrete options.
+Do not emit switch-agent actions or try to change agents. There is only one agent in this sandbox.`;
 
 function normalizeAnthropicBaseUrl(url?: string): string | undefined {
   if (!url) return undefined;
@@ -62,27 +64,20 @@ export async function handleChat(body: {
     return Response.json({ error: 'messages are required' }, { status: 400 });
   }
 
-  // Persist the latest user message and keep a full transcript on disk.
-  const previous = loadMessages();
-  const merged =
-    previous.length === 0
-      ? incoming
-      : [
-          ...previous,
-          ...incoming.filter((msg) => !previous.some((p) => p.id === msg.id)),
-        ];
-  replaceMessages(merged);
+  // Client transcript is authoritative so tool outputs (AskUserQuestion answers)
+  // replace prior pending tool calls with the same message ids.
+  replaceMessages(incoming);
 
   const tools = createWorkspaceTools();
   const model = getModel();
 
   const stream = createUIMessageStream({
-    originalMessages: merged,
+    originalMessages: incoming,
     execute: async ({ writer }) => {
       const result = streamText({
         model,
         system: SYSTEM_PROMPT,
-        messages: await convertToModelMessages(merged, { tools }),
+        messages: await convertToModelMessages(incoming, { tools }),
         tools,
         stopWhen: stepCountIs(20),
       });
@@ -90,7 +85,7 @@ export async function handleChat(body: {
       // UIMessage stream emits tool-* parts that PartRenderer / tool-registry consume.
       writer.merge(
         result.toUIMessageStream({
-          originalMessages: merged,
+          originalMessages: incoming,
         })
       );
     },

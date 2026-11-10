@@ -9,6 +9,7 @@ import {
 } from '@cortex/ai-components/ai-elements';
 import { PartRenderer } from '@cortex/ai-components/rush-v2-chat';
 import type { RushUIDataTypes } from '@cortex/shared/types/ai-chat';
+import type { UserQuestionAnswer } from '@cortex/shared/types/ask-user-question';
 import { Button } from '@cortex/ui/components/ui/button';
 import type { ChatStatus, UIMessage, UITools } from 'ai';
 import { SandboxPrompt } from './sandbox-prompt';
@@ -28,6 +29,10 @@ interface ChatPanelProps {
   onSend: () => void;
   onStopProject: () => void;
   onDeleteProject: () => void;
+  onAskUserAnswer?: (params: {
+    toolCallId: string;
+    answers: UserQuestionAnswer[];
+  }) => void | Promise<void>;
 }
 
 export function ChatPanel({
@@ -42,6 +47,7 @@ export function ChatPanel({
   onSend,
   onStopProject,
   onDeleteProject,
+  onAskUserAnswer,
 }: ChatPanelProps) {
   return (
     <section className="flex h-full min-w-0 flex-col bg-background">
@@ -117,6 +123,7 @@ export function ChatPanel({
                         index={index}
                         status={status}
                         isLastMessage={isLastMessage}
+                        onAskUserAnswer={onAskUserAnswer}
                       />
                     ))}
                   </MessageContent>

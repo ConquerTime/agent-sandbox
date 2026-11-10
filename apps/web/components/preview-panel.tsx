@@ -1,13 +1,35 @@
 'use client';
 
 import { Button } from '@cortex/ui/components/ui/button';
+import type { ChatStatus } from 'ai';
+import { useEffect, useRef, useState } from 'react';
 import type { Project } from './types';
 
 interface PreviewPanelProps {
   project: Project | null;
+  chatStatus?: ChatStatus;
 }
 
-export function PreviewPanel({ project }: PreviewPanelProps) {
+export function PreviewPanel({ project, chatStatus }: PreviewPanelProps) {
+  const [reloadToken, setReloadToken] = useState(0);
+  const previousStatus = useRef<ChatStatus | undefined>(chatStatus);
+
+  useEffect(() => {
+    const previous = previousStatus.current;
+    previousStatus.current = chatStatus;
+    if (
+      project &&
+      (previous === 'streaming' || previous === 'submitted') &&
+      chatStatus === 'ready'
+    ) {
+      setReloadToken((token) => token + 1);
+    }
+  }, [chatStatus, project]);
+
+  useEffect(() => {
+    setReloadToken(0);
+  }, [project?.id]);
+
   return (
     <section className="preview-column flex h-full flex-col border-l border-border bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -24,12 +46,7 @@ export function PreviewPanel({ project }: PreviewPanelProps) {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => {
-              const frame = document.getElementById(
-                'preview-frame'
-              ) as HTMLIFrameElement | null;
-              if (frame) frame.src = frame.src;
-            }}
+            onClick={() => setReloadToken((token) => token + 1)}
           >
             Refresh
           </Button>
@@ -37,10 +54,11 @@ export function PreviewPanel({ project }: PreviewPanelProps) {
       </div>
       {project ? (
         <iframe
+          key={`${project.id}-${reloadToken}`}
           id="preview-frame"
           className="h-full w-full flex-1 bg-white"
           title="sandbox-preview"
-          src={`/api/preview/${project.id}`}
+          src={`/api/preview/${project.id}?t=${reloadToken}`}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">

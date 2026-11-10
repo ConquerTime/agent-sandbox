@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { tool } from 'ai';
 import { z } from 'zod';
+import { scheduleReconcilePreview } from './preview.js';
 import {
   getWorkspaceDir,
   resolveWorkspacePath,
@@ -62,6 +63,7 @@ export function createWorkspaceTools() {
         const absolute = resolveWorkspacePath(file_path);
         mkdirSync(dirname(absolute), { recursive: true });
         writeFileSync(absolute, content, 'utf8');
+        scheduleReconcilePreview();
         return { path: toWorkspaceRelative(absolute), bytes: content.length };
       },
     }),
@@ -81,6 +83,7 @@ export function createWorkspaceTools() {
         }
         const next = previous.replace(old_string, new_string);
         writeFileSync(absolute, next, 'utf8');
+        scheduleReconcilePreview();
         return { path: toWorkspaceRelative(absolute), changed: true };
       },
     }),
@@ -163,6 +166,7 @@ export function createWorkspaceTools() {
               },
             }
           );
+          scheduleReconcilePreview();
           return {
             exitCode: 0,
             stdout: stdout.slice(0, 50_000),
@@ -175,6 +179,7 @@ export function createWorkspaceTools() {
             stderr?: string;
             message: string;
           };
+          scheduleReconcilePreview();
           return {
             exitCode: typeof err.code === 'number' ? err.code : 1,
             stdout: (err.stdout || '').slice(0, 50_000),
@@ -198,6 +203,31 @@ export function createWorkspaceTools() {
           mtime: stats.mtime.toISOString(),
         };
       },
+    }),
+
+    // Client-side tool: no execute. The chat UI answers via addToolOutput.
+    AskUserQuestion: tool({
+      description:
+        'Ask the user a multiple-choice question when a product or design decision is required before continuing. Use sparingly.',
+      inputSchema: z.object({
+        questions: z
+          .array(
+            z.object({
+              header: z.string().describe('Short label shown above the question'),
+              question: z.string(),
+              options: z
+                .array(
+                  z.object({
+                    label: z.string(),
+                    description: z.string(),
+                  })
+                )
+                .min(2),
+              multiSelect: z.boolean(),
+            })
+          )
+          .min(1),
+      }),
     }),
   };
 }

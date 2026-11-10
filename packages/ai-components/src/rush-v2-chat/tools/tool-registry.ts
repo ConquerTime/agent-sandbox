@@ -6,6 +6,7 @@
  */
 
 import type { RushUIDataTypes } from '@cortex/shared/types/ai-chat';
+import type { UserQuestionAnswer } from '@cortex/shared/types/ask-user-question';
 import type { ChatStatus, UIMessage, UIMessagePart, UITools } from 'ai';
 import type React from 'react';
 
@@ -38,6 +39,14 @@ export interface ToolRendererProps {
   onScaffoldAutoOpenPreview?: () => void;
   /** AskUserQuestion option action 触发 agent 切换时通知宿主 */
   onSwitchAgent?: (params: { agentName: string; message: string }) => void;
+  /**
+   * Sandbox / open-source hosts: submit AskUserQuestion answers via addToolOutput.
+   * When provided, the tool skips the enterprise `/api/ai-stream-v2/answer` path.
+   */
+  onAskUserAnswer?: (params: {
+    toolCallId: string;
+    answers: UserQuestionAnswer[];
+  }) => void | Promise<void>;
 }
 
 /**

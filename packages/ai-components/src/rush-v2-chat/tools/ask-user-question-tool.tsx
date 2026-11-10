@@ -248,6 +248,7 @@ export const AskUserQuestionTool = memo(
     part,
     status,
     onSwitchAgent,
+    onAskUserAnswer,
   }: ToolRendererProps) {
     const typedPart = part as ToolUIPart<UITools>;
     const input = ('input' in typedPart ? typedPart.input : undefined) as
@@ -256,6 +257,7 @@ export const AskUserQuestionTool = memo(
     const state = 'state' in typedPart ? typedPart.state : undefined;
     const toolCallId =
       'toolCallId' in typedPart ? (typedPart.toolCallId as string) : undefined;
+    const sandboxMode = Boolean(onAskUserAnswer);
 
     const raw = input?.questions;
     const questions = Array.isArray(raw)
@@ -349,10 +351,27 @@ export const AskUserQuestionTool = memo(
       };
     }, [isVisible, isCompleted, allAnswered, isExpired]);
 
-    // 超时 → 自动执行第一个 switch-agent action
+    // 超时：沙盒走 addToolOutput；企业版尝试 switch-agent
     const switchExecutedRef = useRef(false);
     useEffect(() => {
-      if (!isExpired || switchExecutedRef.current || !onSwitchAgent) return;
+      if (!isExpired || switchExecutedRef.current) return;
+
+      if (sandboxMode && onAskUserAnswer && toolCallId) {
+        switchExecutedRef.current = true;
+        setIsSubmitting(true);
+        const answers = questions.map(
+          (_q, index) =>
+            submittedAnswers.get(index) ?? {
+              questionIndex: index,
+              selectedLabels: [],
+              freeText: '用户未回答，请自行决定',
+            }
+        );
+        void onAskUserAnswer({ toolCallId, answers });
+        return;
+      }
+
+      if (!onSwitchAgent) return;
       for (const q of questions) {
         for (const opt of q.options ?? []) {
           if (opt.action?.type === 'switch-agent') {
@@ -366,7 +385,15 @@ export const AskUserQuestionTool = memo(
           }
         }
       }
-    }, [isExpired, questions, onSwitchAgent]);
+    }, [
+      isExpired,
+      questions,
+      onSwitchAgent,
+      sandboxMode,
+      onAskUserAnswer,
+      toolCallId,
+      submittedAnswers,
+    ]);
 
     const projectId = useMemo(() => {
       if (typeof window === 'undefined') return '';
@@ -380,30 +407,45 @@ export const AskUserQuestionTool = memo(
         newAnswers.set(answer.questionIndex, answer);
         setSubmittedAnswers(newAnswers);
 
-        if (newAnswers.size === questions.length && toolCallId && projectId) {
-          setIsSubmitting(true);
-          try {
-            await fetch('/api/ai-stream-v2/answer', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                projectId,
-                toolCallId,
-                answers: [...newAnswers.values()],
-              }),
+        if (newAnswers.size !== questions.length || !toolCallId) return;
+
+        setIsSubmitting(true);
+        try {
+          if (onAskUserAnswer) {
+            await onAskUserAnswer({
+              toolCallId,
+              answers: [...newAnswers.values()],
             });
-          } catch (err) {
-            console.error('[AskUserQuestion] Submit error:', err);
+            return;
           }
+
+          if (!projectId) return;
+          await fetch('/api/ai-stream-v2/answer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              toolCallId,
+              answers: [...newAnswers.values()],
+            }),
+          });
+        } catch (err) {
+          console.error('[AskUserQuestion] Submit error:', err);
         }
       },
-      [submittedAnswers, questions.length, toolCallId, projectId]
+      [
+        submittedAnswers,
+        questions.length,
+        toolCallId,
+        projectId,
+        onAskUserAnswer,
+      ]
     );
 
-    // 点击带 action 的 option → 不提交 answer，直接 switch
+    // 点击带 action 的 option → 不提交 answer，直接 switch（沙盒忽略 action）
     const handleAction = useCallback(
       (action: AskUserQuestionOptionAction) => {
-        if (switchExecutedRef.current || !onSwitchAgent) return;
+        if (sandboxMode || switchExecutedRef.current || !onSwitchAgent) return;
         if (action.type === 'switch-agent') {
           switchExecutedRef.current = true;
           setIsSwitching(true);
@@ -413,7 +455,7 @@ export const AskUserQuestionTool = memo(
           });
         }
       },
-      [onSwitchAgent]
+      [onSwitchAgent, sandboxMode]
     );
 
     if (!questions.length) return null;
@@ -458,7 +500,7 @@ export const AskUserQuestionTool = memo(
               question={q}
               questionIndex={i}
               onAnswer={handleAnswer}
-              onAction={handleAction}
+              onAction={sandboxMode ? undefined : handleAction}
               disabled={disabled || submittedAnswers.has(i)}
               initialSelectedLabels={restored?.selectedLabels}
               initialFreeText={restored?.freeText}

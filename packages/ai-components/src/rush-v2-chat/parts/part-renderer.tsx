@@ -11,6 +11,7 @@ import type {
   RushUIDataTypes,
   SuggestionItemRaw,
 } from '@cortex/shared/types/ai-chat';
+import type { UserQuestionAnswer } from '@cortex/shared/types/ask-user-question';
 import type { ChatStatus, UIMessage, UIMessagePart, UITools } from 'ai';
 import { memo, useEffect, useRef } from 'react';
 import { SummarizationMessage } from '../../ai-elements/Capabilities/SummarizationCapability';
@@ -41,6 +42,11 @@ export interface PartRendererProps {
   onScaffoldAutoOpenPreview?: () => void;
   /** AskUserQuestion option action 触发 agent 切换时通知宿主 */
   onSwitchAgent?: (params: { agentName: string; message: string }) => void;
+  /** Sandbox host: wire AskUserQuestion answers through addToolOutput */
+  onAskUserAnswer?: (params: {
+    toolCallId: string;
+    answers: UserQuestionAnswer[];
+  }) => void | Promise<void>;
 }
 
 /**
@@ -60,6 +66,7 @@ export const PartRenderer = memo(
     onWebdevInitPreviewClick,
     onScaffoldAutoOpenPreview,
     onSwitchAgent,
+    onAskUserAnswer,
   }: PartRendererProps) {
     // 文本片段：user 走 MessageText（识别 ElementDataType 块为 LinkMention 芯片），
     // assistant 直接走 Response，避免把助手产出的 HTML 片段误识别为 mention。
@@ -155,6 +162,7 @@ export const PartRenderer = memo(
           onWebdevInitPreviewClick={onWebdevInitPreviewClick}
           onScaffoldAutoOpenPreview={onScaffoldAutoOpenPreview}
           onSwitchAgent={onSwitchAgent}
+          onAskUserAnswer={onAskUserAnswer}
         />
       );
     }
@@ -172,7 +180,8 @@ export const PartRenderer = memo(
     prev.onSuggestionSelect === next.onSuggestionSelect &&
     prev.onWebdevInitPreviewClick === next.onWebdevInitPreviewClick &&
     prev.onScaffoldAutoOpenPreview === next.onScaffoldAutoOpenPreview &&
-    prev.onSwitchAgent === next.onSwitchAgent
+    prev.onSwitchAgent === next.onSwitchAgent &&
+    prev.onAskUserAnswer === next.onAskUserAnswer
 );
 
 PartRenderer.displayName = 'PartRenderer';

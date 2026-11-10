@@ -5,12 +5,15 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { getWorkspaceDir } from './workspace.js';
 
+let previewPort = Number(process.env.PREVIEW_PORT || 8000);
 let previewProcess: ChildProcess | null = null;
-let staticServer: ReturnType<typeof createServer> | null = null;
+let currentScript: string | null = null;
+let staticServer: Server | null = null;
+let reconcileQueued = false;
 
 function ensureDefaultPreviewFiles(workspace: string): void {
   const indexPath = join(workspace, 'index.html');
@@ -52,6 +55,60 @@ function contentType(relative: string): string {
   return 'application/octet-stream';
 }
 
+/** Exported for unit tests: which npm script should own the preview port. */
+export function detectDesiredPreviewScript(workspace: string): string | null {
+  const packageJsonPath = join(workspace, 'package.json');
+  if (!existsSync(packageJsonPath)) return null;
+  if (!existsSync(join(workspace, 'node_modules'))) return null;
+
+  try {
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    if (pkg.scripts?.dev) return 'dev';
+    if (pkg.scripts?.start) return 'start';
+    if (pkg.scripts?.preview) return 'preview';
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function stopStaticServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!staticServer) {
+      resolve();
+      return;
+    }
+    const server = staticServer;
+    staticServer = null;
+    server.close(() => resolve());
+  });
+}
+
+function stopPreviewProcess(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!previewProcess) {
+      currentScript = null;
+      resolve();
+      return;
+    }
+    const child = previewProcess;
+    previewProcess = null;
+    currentScript = null;
+    child.once('exit', () => resolve());
+    child.kill('SIGTERM');
+    setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already exited
+      }
+      resolve();
+    }, 3_000);
+  });
+}
+
 function startStaticServer(port: number, root: string): void {
   if (staticServer) return;
 
@@ -91,51 +148,91 @@ function startStaticServer(port: number, root: string): void {
   });
 }
 
+function startNpmPreview(scriptName: string, workspace: string, port: number): void {
+  if (previewProcess) return;
+
+  currentScript = scriptName;
+  previewProcess = spawn(
+    'npm',
+    ['run', scriptName, '--', '--host', '0.0.0.0', '--port', String(port)],
+    {
+      cwd: workspace,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: '0.0.0.0',
+      },
+      stdio: 'inherit',
+    }
+  );
+
+  previewProcess.on('exit', (code) => {
+    console.warn(`[agent] preview process exited with code ${code}`);
+    previewProcess = null;
+    currentScript = null;
+    startStaticServer(port, workspace);
+  });
+
+  console.log(`[agent] preview npm run ${scriptName} on :${port}`);
+}
+
+/**
+ * Prefer an npm preview script when dependencies exist; otherwise serve static files.
+ * Safe to call repeatedly after Write / Edit / Bash.
+ */
+export async function reconcilePreview(
+  port = previewPort
+): Promise<{ mode: 'static' | 'npm'; script: string | null }> {
+  previewPort = port;
+  const workspace = getWorkspaceDir();
+  mkdirSync(workspace, { recursive: true });
+  ensureDefaultPreviewFiles(workspace);
+
+  const desiredScript = detectDesiredPreviewScript(workspace);
+
+  if (desiredScript) {
+    if (previewProcess && currentScript === desiredScript) {
+      return { mode: 'npm', script: desiredScript };
+    }
+
+    await stopStaticServer();
+    if (previewProcess && currentScript !== desiredScript) {
+      await stopPreviewProcess();
+    }
+    if (!previewProcess) {
+      startNpmPreview(desiredScript, workspace, port);
+    }
+    return { mode: 'npm', script: desiredScript };
+  }
+
+  await stopPreviewProcess();
+  startStaticServer(port, workspace);
+  return { mode: 'static', script: null };
+}
+
+/**
+ * Coalesce bursty tool writes into a single reconcile pass.
+ */
+export function scheduleReconcilePreview(): void {
+  if (reconcileQueued) return;
+  reconcileQueued = true;
+  queueMicrotask(() => {
+    reconcileQueued = false;
+    void reconcilePreview().catch((error) => {
+      console.warn('[agent] preview reconcile failed:', error);
+    });
+  });
+}
+
 /**
  * Prefer npm scripts if package.json exists; otherwise serve static files.
  */
 export function startPreview(
   port = Number(process.env.PREVIEW_PORT || 8000)
 ): void {
-  const workspace = getWorkspaceDir();
-  mkdirSync(workspace, { recursive: true });
-  ensureDefaultPreviewFiles(workspace);
-
-  const packageJson = join(workspace, 'package.json');
-  if (existsSync(packageJson) && !previewProcess) {
-    try {
-      const pkg = JSON.parse(readFileSync(packageJson, 'utf8')) as {
-        scripts?: Record<string, string>;
-      };
-      const scriptName = pkg.scripts?.dev
-        ? 'dev'
-        : pkg.scripts?.start
-          ? 'start'
-          : pkg.scripts?.preview
-            ? 'preview'
-            : null;
-
-      if (scriptName) {
-        previewProcess = spawn('npm', ['run', scriptName], {
-          cwd: workspace,
-          env: {
-            ...process.env,
-            PORT: String(port),
-            HOST: '0.0.0.0',
-          },
-          stdio: 'inherit',
-        });
-        previewProcess.on('exit', (code) => {
-          console.warn(`[agent] preview process exited with code ${code}`);
-          previewProcess = null;
-          startStaticServer(port, workspace);
-        });
-        return;
-      }
-    } catch (error) {
-      console.warn('[agent] failed to start package preview, using static', error);
-    }
-  }
-
-  startStaticServer(port, workspace);
+  previewPort = port;
+  void reconcilePreview(port).catch((error) => {
+    console.warn('[agent] failed to start preview:', error);
+    startStaticServer(port, getWorkspaceDir());
+  });
 }
