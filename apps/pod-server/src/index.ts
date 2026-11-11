@@ -12,6 +12,7 @@ import {
   stopProject,
   toPublicProject,
 } from './projects.js';
+import { poolStatus, scheduleReplenish } from './pool.js';
 import { getProject } from './registry.js';
 
 const app = new Hono();
@@ -22,7 +23,10 @@ app.get('/health', (c) =>
   c.json({
     status: 'ok',
     service: 'pod-server',
+    runtime: 'kubernetes',
     agentImage: config.agentImage,
+    namespace: config.k8sNamespace,
+    pool: poolStatus(),
   })
 );
 
@@ -97,7 +101,13 @@ app.all('/p/:id/preview/*', (c) =>
 );
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
-  console.log(`[pod-server] listening on http://localhost:${info.port}`);
+  console.log(`[pod-server] listening on http://0.0.0.0:${info.port}`);
+  console.log(`[pod-server] runtime: kubernetes namespace=${config.k8sNamespace}`);
   console.log(`[pod-server] agent image: ${config.agentImage}`);
   console.log(`[pod-server] data dir: ${config.dataDir}`);
+  if (config.agentDevRoot) {
+    console.log(`[pod-server] agent dev mounts: ${config.agentDevRoot}`);
+  }
+  console.log(`[pod-server] pool size: ${config.poolSize}`);
+  scheduleReplenish();
 });

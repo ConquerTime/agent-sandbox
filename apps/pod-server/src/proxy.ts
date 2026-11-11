@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { getPublishedPorts, isContainerRunning } from './docker.js';
+import { isReleaseRunning, resolveUpstreamBase } from './k8s/runtime.js';
 import { ensureReady } from './projects.js';
 import { getProject } from './registry.js';
 
@@ -13,7 +13,6 @@ async function resolveUpstream(
   projectId: string,
   kind: 'agent' | 'preview'
 ): Promise<{ targetBase: string }> {
-  await ensureReady(projectId);
   const record = getProject(projectId);
   if (!record) {
     throw Object.assign(new Error(`Project not found: ${projectId}`), {
@@ -21,17 +20,13 @@ async function resolveUpstream(
     });
   }
 
-  const running = await isContainerRunning(record.containerName);
-  if (!running) {
-    throw Object.assign(new Error(`Container not running: ${projectId}`), {
-      status: 503,
-    });
+  // Only scale up when the release is not already ready — avoids a Scale
+  // replace on every proxied chat/preview chunk.
+  if (!(await isReleaseRunning(projectId))) {
+    await ensureReady(projectId);
   }
 
-  const ports = await getPublishedPorts(record.containerName);
-  const hostPort =
-    kind === 'agent' ? ports.agentHostPort : ports.previewHostPort;
-  return { targetBase: `http://127.0.0.1:${hostPort}` };
+  return { targetBase: resolveUpstreamBase(projectId, kind) };
 }
 
 export async function proxyToProject(

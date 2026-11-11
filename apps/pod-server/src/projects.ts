@@ -1,14 +1,15 @@
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { nanoid } from 'nanoid';
 import { config } from './config.js';
 import {
-  createAndStartContainer,
-  removeContainer,
-  startContainer,
-  stopContainer,
+  createAndStartRelease,
+  removeRelease,
+  startRelease,
+  stopRelease,
   waitForAgentHealth,
-} from './docker.js';
+} from './k8s/runtime.js';
+import { releaseNameFor, workspaceHostPath } from './k8s/resources.js';
+import { acquireIdle, newProjectId, scheduleReplenish } from './pool.js';
 import {
   deleteProject,
   getProject,
@@ -18,9 +19,34 @@ import {
   upsertProject,
 } from './registry.js';
 
-function volumePathFor(projectId: string): string {
-  return join(config.dataDir, 'volumes', projectId);
+function volumeRoot(): string {
+  if (process.env.WORKSPACE_HOST_ROOT) {
+    return process.env.WORKSPACE_HOST_ROOT.replace(/\/$/, '');
+  }
+  return join(process.env.POD_DATA_DIR || config.dataDir, 'volumes');
 }
+
+function volumePathFor(projectId: string): string {
+  return workspaceHostPath(projectId, volumeRoot());
+}
+
+export interface CreateProjectDeps {
+  acquire: () => Promise<{ id: string; createdAt: string } | null>;
+  createAndStart: (projectId: string) => Promise<void>;
+  waitHealthy: (projectId: string) => Promise<void>;
+  removeRelease: (projectId: string) => Promise<void>;
+  replenish: () => void;
+}
+
+const defaultCreateDeps: CreateProjectDeps = {
+  acquire: () => acquireIdle(),
+  createAndStart: async (projectId) => {
+    await createAndStartRelease({ projectId });
+  },
+  waitHealthy: (projectId) => waitForAgentHealth(projectId),
+  removeRelease: (projectId) => removeRelease(projectId),
+  replenish: () => scheduleReplenish(),
+};
 
 export function toPublicProject(record: ProjectRecord) {
   const urls = projectUrls(record.id);
@@ -40,39 +66,66 @@ export function listPublicProjects() {
   return listProjects().map(toPublicProject);
 }
 
-export async function createProject(input: {
-  name?: string;
-}): Promise<ReturnType<typeof toPublicProject>> {
-  const id = nanoid(12).toLowerCase().replace(/_/g, 'x');
-  const now = new Date().toISOString();
-  const volumePath = volumePathFor(id);
-  mkdirSync(volumePath, { recursive: true });
-  mkdirSync(join(volumePath, '.sandbox'), { recursive: true });
-
-  const record: ProjectRecord = {
-    id,
-    name: input.name?.trim() || `project-${id.slice(0, 6)}`,
-    containerName: `as-agent-${id}`,
-    volumePath,
-    status: 'pending',
-    createdAt: now,
-    updatedAt: now,
-  };
-  upsertProject(record);
-
+export async function createProject(
+  input: { name?: string },
+  deps: CreateProjectDeps = defaultCreateDeps
+): Promise<ReturnType<typeof toPublicProject>> {
   try {
-    await createAndStartContainer({ projectId: id, volumePath });
-    await waitForAgentHealth(record.containerName);
-    record.status = 'running';
-    record.updatedAt = new Date().toISOString();
+    const claimed = await deps.acquire();
+    if (claimed) {
+      const now = new Date().toISOString();
+      const record: ProjectRecord = {
+        id: claimed.id,
+        name: input.name?.trim() || `project-${claimed.id.slice(0, 6)}`,
+        releaseName: releaseNameFor(claimed.id),
+        volumePath: volumePathFor(claimed.id),
+        status: 'running',
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        upsertProject(record);
+      } catch (error) {
+        await deps.removeRelease(claimed.id);
+        rmSync(record.volumePath, { recursive: true, force: true });
+        throw error;
+      }
+      return toPublicProject(record);
+    }
+
+    const id = newProjectId();
+    const now = new Date().toISOString();
+    const volumePath = volumePathFor(id);
+    mkdirSync(volumePath, { recursive: true });
+    mkdirSync(join(volumePath, '.sandbox'), { recursive: true });
+
+    const record: ProjectRecord = {
+      id,
+      name: input.name?.trim() || `project-${id.slice(0, 6)}`,
+      releaseName: releaseNameFor(id),
+      volumePath,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
     upsertProject(record);
-    return toPublicProject(record);
-  } catch (error) {
-    record.status = 'error';
-    record.lastError = error instanceof Error ? error.message : String(error);
-    record.updatedAt = new Date().toISOString();
-    upsertProject(record);
-    throw error;
+
+    try {
+      await deps.createAndStart(id);
+      await deps.waitHealthy(id);
+      record.status = 'running';
+      record.updatedAt = new Date().toISOString();
+      upsertProject(record);
+      return toPublicProject(record);
+    } catch (error) {
+      record.status = 'error';
+      record.lastError = error instanceof Error ? error.message : String(error);
+      record.updatedAt = new Date().toISOString();
+      upsertProject(record);
+      throw error;
+    }
+  } finally {
+    deps.replenish();
   }
 }
 
@@ -87,8 +140,8 @@ export async function ensureReady(
   }
 
   try {
-    await startContainer(record.containerName);
-    await waitForAgentHealth(record.containerName);
+    await startRelease(projectId);
+    await waitForAgentHealth(projectId);
     record.status = 'running';
     record.lastError = undefined;
     record.updatedAt = new Date().toISOString();
@@ -113,7 +166,7 @@ export async function stopProject(
     });
   }
 
-  await stopContainer(record.containerName);
+  await stopRelease(projectId);
   record.status = 'stopped';
   record.updatedAt = new Date().toISOString();
   upsertProject(record);
@@ -128,7 +181,7 @@ export async function destroyProject(projectId: string): Promise<void> {
     });
   }
 
-  await removeContainer(record.containerName);
+  await removeRelease(projectId);
   rmSync(record.volumePath, { recursive: true, force: true });
   deleteProject(projectId);
 }

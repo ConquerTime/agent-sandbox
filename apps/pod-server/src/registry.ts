@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
+import { releaseNameFor } from './k8s/resources.js';
 
 export type ProjectStatus = 'running' | 'stopped' | 'pending' | 'error';
 
 export interface ProjectRecord {
   id: string;
   name: string;
-  containerName: string;
+  /** K8s Deployment / Service name (`as-agent-<id>`). */
+  releaseName: string;
   volumePath: string;
   status: ProjectStatus;
   createdAt: string;
@@ -15,26 +17,50 @@ export interface ProjectRecord {
   lastError?: string;
 }
 
-const registryPath = join(config.dataDir, 'registry', 'projects.json');
+function dataRoot(): string {
+  return process.env.POD_DATA_DIR || config.dataDir;
+}
+
+function registryPath(): string {
+  return join(dataRoot(), 'registry', 'projects.json');
+}
 
 function ensureRegistryFile(): void {
-  const dir = join(config.dataDir, 'registry');
-  mkdirSync(dir, { recursive: true });
-  if (!existsSync(registryPath)) {
-    writeFileSync(registryPath, JSON.stringify({ projects: [] }, null, 2));
+  const path = registryPath();
+  mkdirSync(join(dataRoot(), 'registry'), { recursive: true });
+  if (!existsSync(path)) {
+    writeFileSync(path, JSON.stringify({ projects: [] }, null, 2));
   }
+}
+
+function normalizeRecord(
+  raw: ProjectRecord & { containerName?: string }
+): ProjectRecord {
+  return {
+    id: raw.id,
+    name: raw.name,
+    releaseName:
+      raw.releaseName || raw.containerName || releaseNameFor(raw.id),
+    volumePath: raw.volumePath,
+    status: raw.status,
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+    lastError: raw.lastError,
+  };
 }
 
 function readAll(): ProjectRecord[] {
   ensureRegistryFile();
-  const raw = readFileSync(registryPath, 'utf8');
-  const parsed = JSON.parse(raw) as { projects: ProjectRecord[] };
-  return parsed.projects ?? [];
+  const raw = readFileSync(registryPath(), 'utf8');
+  const parsed = JSON.parse(raw) as {
+    projects: Array<ProjectRecord & { containerName?: string }>;
+  };
+  return (parsed.projects ?? []).map(normalizeRecord);
 }
 
 function writeAll(projects: ProjectRecord[]): void {
   ensureRegistryFile();
-  writeFileSync(registryPath, JSON.stringify({ projects }, null, 2));
+  writeFileSync(registryPath(), JSON.stringify({ projects }, null, 2));
 }
 
 export function listProjects(): ProjectRecord[] {
