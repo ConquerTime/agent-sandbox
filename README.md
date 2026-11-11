@@ -9,6 +9,7 @@ Open-source multi-tenant agent sandbox. Each project runs in its own Docker cont
 - [Phase 1 migration](docs/migrations/phase-1-sandbox-and-ui.md) — sandbox + UI packages
 - [Phase 2 migration](docs/migrations/phase-2-coding-loop.md) — AskUserQuestion, live preview, history
 - [Phase 3 migration](docs/migrations/phase-3-kernel-switch.md) — `sdk` / `claude-code` kernel switch
+- [Database and stream resume](docs/database-and-resume.md) — optional Postgres control plane and Redis SSE resume
 
 ## Architecture
 

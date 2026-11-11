@@ -28,6 +28,7 @@ interface ChatPanelProps {
   onInputChange: (value: string) => void;
   onSend: () => void;
   onStopProject: () => void;
+  onStopGeneration?: () => void;
   onDeleteProject: () => void;
   onAskUserAnswer?: (params: {
     toolCallId: string;
@@ -46,9 +47,11 @@ export function ChatPanel({
   onInputChange,
   onSend,
   onStopProject,
+  onStopGeneration,
   onDeleteProject,
   onAskUserAnswer,
 }: ChatPanelProps) {
+  const streaming = status === 'streaming' || status === 'submitted';
   return (
     <section className="flex h-full min-w-0 flex-col bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -64,6 +67,16 @@ export function ChatPanel({
         </div>
         {project ? (
           <div className="flex shrink-0 items-center gap-2">
+            {streaming && onStopGeneration ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onStopGeneration}
+              >
+                Stop reply
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"

@@ -2,11 +2,16 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import {
   convertToModelMessages,
   createUIMessageStream,
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
   type UIMessage,
 } from 'ai';
+import {
+  armGeneration,
+  beginStream,
+  chatSseResponse,
+  releaseActiveStream,
+} from './chat-stream.js';
 import { replaceMessages } from './messages.js';
 import { createWorkspaceTools } from './tools.js';
 import { getWorkspaceDir } from './workspace.js';
@@ -64,36 +69,52 @@ export async function handleChat(body: {
     return Response.json({ error: 'messages are required' }, { status: 400 });
   }
 
+  const gate = await beginStream();
+  if ('conflict' in gate) {
+    return Response.json(
+      { error: 'A chat turn is already running for this project' },
+      { status: 409 }
+    );
+  }
+
   // Client transcript is authoritative so tool outputs (AskUserQuestion answers)
   // replace prior pending tool calls with the same message ids.
   replaceMessages(incoming);
 
+  const abortSignal = armGeneration();
   const tools = createWorkspaceTools();
   const model = getModel();
 
   const stream = createUIMessageStream({
     originalMessages: incoming,
     execute: async ({ writer }) => {
-      const result = streamText({
-        model,
-        system: SYSTEM_PROMPT,
-        messages: await convertToModelMessages(incoming, { tools }),
-        tools,
-        stopWhen: stepCountIs(20),
-      });
+      try {
+        const result = streamText({
+          model,
+          system: SYSTEM_PROMPT,
+          messages: await convertToModelMessages(incoming, { tools }),
+          tools,
+          stopWhen: stepCountIs(20),
+          abortSignal,
+        });
 
-      // UIMessage stream emits tool-* parts that PartRenderer / tool-registry consume.
-      writer.merge(
-        result.toUIMessageStream({
-          originalMessages: incoming,
-        })
-      );
+        // UIMessage stream emits tool-* parts that PartRenderer / tool-registry consume.
+        writer.merge(
+          result.toUIMessageStream({
+            originalMessages: incoming,
+          })
+        );
+      } catch (error) {
+        await releaseActiveStream();
+        throw error;
+      }
     },
-    onFinish: ({ messages }) => {
+    onFinish: async ({ messages }) => {
       // Persist full transcript including tool call / result parts for history reload.
       replaceMessages(messages);
+      await releaseActiveStream();
     },
   });
 
-  return createUIMessageStreamResponse({ stream });
+  return chatSseResponse(stream);
 }

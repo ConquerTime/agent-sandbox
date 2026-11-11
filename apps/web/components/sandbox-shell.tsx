@@ -9,7 +9,7 @@ import {
   type UIMessage,
   type UITools,
 } from 'ai';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatPanel } from './chat-panel';
 import { PreviewPanel } from './preview-panel';
 import { ProjectSidebar } from './project-sidebar';
@@ -46,6 +46,7 @@ export function SandboxShell() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [canResume, setCanResume] = useState(false);
 
   const refreshUser = useCallback(async () => {
     const response = await fetch('/api/auth/me');
@@ -74,6 +75,26 @@ export function SandboxShell() {
     );
   }, [refreshProjects, refreshUser]);
 
+  useEffect(() => {
+    if (!selectedId) {
+      setCanResume(false);
+      return;
+    }
+    let cancelled = false;
+    setCanResume(false);
+    fetch(`/api/projects/${encodeURIComponent(selectedId)}/stream/status`)
+      .then(async (response) => {
+        const data = (await response.json()) as { canResume?: boolean };
+        if (!cancelled) setCanResume(Boolean(response.ok && data.canResume));
+      })
+      .catch(() => {
+        if (!cancelled) setCanResume(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
   const transport = useMemo(() => {
     if (!selectedId) return undefined;
     return new DefaultChatTransport({
@@ -82,12 +103,24 @@ export function SandboxShell() {
     });
   }, [selectedId]);
 
-  const { messages, sendMessage, status, setMessages, addToolOutput } =
+  const { messages, sendMessage, status, setMessages, addToolOutput, stop, resumeStream } =
     useChat<RushMessage>({
       id: selectedId || 'none',
       transport,
+      resume: canResume,
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     });
+
+  const resumedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!canResume) {
+      resumedFor.current = null;
+      return;
+    }
+    if (!selectedId || resumedFor.current === selectedId) return;
+    resumedFor.current = selectedId;
+    void resumeStream();
+  }, [canResume, resumeStream, selectedId]);
 
   useEffect(() => {
     setMessages([]);
@@ -216,6 +249,27 @@ export function SandboxShell() {
     }
   }
 
+  async function handleStopGeneration() {
+    if (!selectedId) return;
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(selectedId)}/chat/stop`,
+        { method: 'POST' }
+      );
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(data.error || 'Failed to stop generation');
+      }
+      stop();
+      setCanResume(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleStop() {
     if (!selectedId) return;
     setBusy(true);
@@ -291,6 +345,7 @@ export function SandboxShell() {
           onInputChange={setInput}
           onSend={() => void handleSend()}
           onStopProject={() => void handleStop()}
+          onStopGeneration={() => void handleStopGeneration()}
           onDeleteProject={() => void handleDelete()}
           onAskUserAnswer={handleAskUserAnswer}
         />

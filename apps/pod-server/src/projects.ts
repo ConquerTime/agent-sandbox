@@ -9,6 +9,13 @@ import {
   waitForAgentHealth,
 } from './k8s/runtime.js';
 import { releaseNameFor, workspaceHostPath } from './k8s/resources.js';
+import {
+  dbDeleteProject,
+  dbGetProjectForOrg,
+  dbListProjects,
+  dbUpsertProject,
+  usingDatabase,
+} from './db.js';
 import { acquireIdle, newProjectId, scheduleReplenish } from './pool.js';
 import {
   deleteProject,
@@ -29,6 +36,19 @@ function volumeRoot(): string {
 
 function volumePathFor(projectId: string): string {
   return workspaceHostPath(projectId, volumeRoot());
+}
+
+async function saveRecord(record: ProjectRecord): Promise<ProjectRecord> {
+  if (usingDatabase()) return dbUpsertProject(record);
+  return upsertProject(record);
+}
+
+async function loadForOrg(
+  projectId: string,
+  orgId: string
+): Promise<ProjectRecord | null> {
+  if (usingDatabase()) return dbGetProjectForOrg(projectId, orgId);
+  return getProjectForOrg(projectId, orgId);
 }
 
 function notFound(projectId: string): Error {
@@ -72,8 +92,11 @@ export function toPublicProject(record: ProjectRecord) {
   };
 }
 
-export function listPublicProjects(orgId: string) {
-  return listProjectsForOrg(orgId).map(toPublicProject);
+export async function listPublicProjects(orgId: string) {
+  const records = usingDatabase()
+    ? await dbListProjects(orgId)
+    : listProjectsForOrg(orgId);
+  return records.map(toPublicProject);
 }
 
 export async function createProject(
@@ -99,7 +122,7 @@ export async function createProject(
         updatedAt: now,
       };
       try {
-        upsertProject(record);
+        await saveRecord(record);
         saved = record;
       } catch (error) {
         await deps.removeRelease(slot.id);
@@ -127,20 +150,20 @@ export async function createProject(
       createdAt: now,
       updatedAt: now,
     };
-    upsertProject(record);
+    await saveRecord(record);
 
     try {
       await deps.createAndStart(id);
       await deps.waitHealthy(id);
       record.status = 'running';
       record.updatedAt = new Date().toISOString();
-      upsertProject(record);
+      await saveRecord(record);
       return toPublicProject(record);
     } catch (error) {
       record.status = 'error';
       record.lastError = error instanceof Error ? error.message : String(error);
       record.updatedAt = new Date().toISOString();
-      upsertProject(record);
+      await saveRecord(record);
       throw error;
     }
   } finally {
@@ -153,7 +176,7 @@ export async function ensureReady(
   orgId?: string
 ): Promise<ReturnType<typeof toPublicProject>> {
   const record = orgId
-    ? getProjectForOrg(projectId, orgId)
+    ? await loadForOrg(projectId, orgId)
     : getProject(projectId);
   if (!record || (orgId && record.orgId !== orgId)) {
     throw notFound(projectId);
@@ -165,13 +188,13 @@ export async function ensureReady(
     record.status = 'running';
     record.lastError = undefined;
     record.updatedAt = new Date().toISOString();
-    upsertProject(record);
+    await saveRecord(record);
     return toPublicProject(record);
   } catch (error) {
     record.status = 'error';
     record.lastError = error instanceof Error ? error.message : String(error);
     record.updatedAt = new Date().toISOString();
-    upsertProject(record);
+    await saveRecord(record);
     throw error;
   }
 }
@@ -180,7 +203,7 @@ export async function stopProject(
   projectId: string,
   orgId: string
 ): Promise<ReturnType<typeof toPublicProject>> {
-  const record = getProjectForOrg(projectId, orgId);
+  const record = await loadForOrg(projectId, orgId);
   if (!record) {
     throw notFound(projectId);
   }
@@ -188,7 +211,7 @@ export async function stopProject(
   await stopRelease(projectId);
   record.status = 'stopped';
   record.updatedAt = new Date().toISOString();
-  upsertProject(record);
+  await saveRecord(record);
   return toPublicProject(record);
 }
 
@@ -196,7 +219,7 @@ export async function destroyProject(
   projectId: string,
   orgId: string
 ): Promise<void> {
-  const record = getProjectForOrg(projectId, orgId);
+  const record = await loadForOrg(projectId, orgId);
   if (!record) {
     throw notFound(projectId);
   }
@@ -207,11 +230,12 @@ export async function destroyProject(
   if (canonical !== record.volumePath) {
     rmSync(canonical, { recursive: true, force: true });
   }
-  deleteProject(projectId);
+  if (usingDatabase()) await dbDeleteProject(projectId);
+  else deleteProject(projectId);
 }
 
-export function getPublicProjectForOrg(projectId: string, orgId: string) {
-  const record = getProjectForOrg(projectId, orgId);
+export async function getPublicProjectForOrg(projectId: string, orgId: string) {
+  const record = await loadForOrg(projectId, orgId);
   if (!record) return null;
   return toPublicProject(record);
 }

@@ -1,4 +1,5 @@
 import type { Context } from 'hono';
+import { dbGetProjectForOrg, usingDatabase } from './db.js';
 import { isReleaseRunning, resolveUpstreamBase } from './k8s/runtime.js';
 import { ensureReady } from './projects.js';
 import { getProjectForOrg } from './registry.js';
@@ -14,7 +15,9 @@ async function resolveUpstream(
   orgId: string,
   kind: 'agent' | 'preview'
 ): Promise<{ targetBase: string }> {
-  const record = getProjectForOrg(projectId, orgId);
+  const record = usingDatabase()
+    ? await dbGetProjectForOrg(projectId, orgId)
+    : getProjectForOrg(projectId, orgId);
   if (!record) {
     throw Object.assign(new Error(`Project not found: ${projectId}`), {
       status: 404,

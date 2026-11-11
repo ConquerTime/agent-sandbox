@@ -1,0 +1,113 @@
+# Local control-plane Postgres. Not part of the warm pod pool.
+# Default role sandbox/sandbox matches the sandbox-data Secret written by scripts/k8s-deploy.sh.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: agent-sandbox-postgres
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: postgres
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: agent-sandbox-postgres
+  hostPath:
+    path: __POSTGRES_HOST_PATH__
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: agent-sandbox-postgres
+  volumeName: agent-sandbox-postgres
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-sandbox
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-sandbox
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              value: sandbox
+            - name: POSTGRES_PASSWORD
+              value: sandbox
+            - name: POSTGRES_DB
+              value: agent_sandbox
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - sandbox
+                - -d
+                - agent_sandbox
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

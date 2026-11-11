@@ -109,13 +109,13 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function hashPassword(password: string, salt?: string): string {
+export function hashPassword(password: string, salt?: string): string {
   const usedSalt = salt || randomBytes(16).toString('hex');
   const hash = scryptSync(password, usedSalt, SCRYPT_KEYLEN).toString('hex');
   return `${usedSalt}:${hash}`;
 }
 
-function verifyPassword(password: string, stored: string): boolean {
+export function verifyPassword(password: string, stored: string): boolean {
   const [salt, expected] = stored.split(':');
   if (!salt || !expected) return false;
   const actual = scryptSync(password, salt, SCRYPT_KEYLEN);
@@ -124,7 +124,7 @@ function verifyPassword(password: string, stored: string): boolean {
   return timingSafeEqual(actual, expectedBuf);
 }
 
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 

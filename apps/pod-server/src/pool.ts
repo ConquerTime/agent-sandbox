@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { nanoid } from 'nanoid';
 import { config } from './config.js';
+import { dbHasProject, usingDatabase } from './db.js';
 import {
   applyPoolLabel,
   createAndStartRelease,
@@ -11,14 +12,15 @@ import {
   removeRelease,
   waitForAgentHealth,
 } from './k8s/runtime.js';
-import { workspaceHostPath } from './k8s/resources.js';
-import { getProject } from './registry.js';
+import { releaseNameFor, workspaceHostPath } from './k8s/resources.js';
+import { getProject, upsertProject, type ProjectRecord } from './registry.js';
 
 const CREATING_TIMEOUT_MS = 3 * 60 * 1000;
 
 export interface PoolDeployment {
   id: string;
-  pool: 'creating' | 'idle';
+  /** `null` means the Deployment is not a pool member (claimed, or an orphan). */
+  pool: 'creating' | 'idle' | null;
   templateHash: string;
   ready: boolean;
   createdAt: string;
@@ -41,7 +43,9 @@ interface PoolSlot {
 }
 
 export interface PoolEngine {
-  acquire(): Promise<{ id: string; createdAt: string } | null>;
+  acquire(
+    commit?: (claimed: { id: string; createdAt: string }) => Promise<void>
+  ): Promise<{ id: string; createdAt: string } | null>;
   reconcile(): Promise<{ createdIds: string[] }>;
   discard(id: string): Promise<void>;
   status(): { target: number; idle: number; creating: number };
@@ -59,6 +63,8 @@ export function createPoolEngine(options: {
   now?: () => Date;
   createId?: () => string;
   hasProject?: (id: string) => boolean;
+  /** Deployment with no pool label and no registry row. Default keeps it. */
+  trackRelease?: (item: PoolDeployment) => void;
 }): PoolEngine {
   const now = options.now ?? (() => new Date());
   const createId = options.createId ?? newProjectId;
@@ -98,10 +104,14 @@ export function createPoolEngine(options: {
     const items = await options.cluster.list();
     writeSlots(
       items
-        .filter((item) => item.templateHash === hash)
+        .filter(
+          (item) =>
+            (item.pool === 'creating' || item.pool === 'idle') &&
+            item.templateHash === hash
+        )
         .map((item) => ({
           id: item.id,
-          state: item.pool,
+          state: item.pool as 'creating' | 'idle',
           templateHash: item.templateHash,
           createdAt: item.createdAt,
         }))
@@ -109,7 +119,7 @@ export function createPoolEngine(options: {
   }
 
   return {
-    acquire() {
+    acquire(commit) {
       return withLock(async () => {
         if (options.poolSize() <= 0) return null;
         const hash = options.templateHash();
@@ -130,14 +140,24 @@ export function createPoolEngine(options: {
             await options.cluster.deleteRelease(item.id);
             continue;
           }
+          const claimed = { id: item.id, createdAt: item.createdAt };
           await options.cluster.clearPoolLabel(item.id);
           try {
-            await syncSlots();
+            // Registry write stays inside the lock. Otherwise reconcile can
+            // see a Deployment with no pool label and no project, and delete it.
+            await commit?.(claimed);
           } catch (error) {
             await options.cluster.deleteRelease(item.id);
             throw error;
           }
-          return { id: item.id, createdAt: item.createdAt };
+          try {
+            await syncSlots();
+          } catch (error) {
+            // pool.json is rebuilt on the next reconcile. The claim is already
+            // in the registry, so do not destroy the release.
+            throw error;
+          }
+          return claimed;
         }
 
         await syncSlots();
@@ -154,7 +174,15 @@ export function createPoolEngine(options: {
 
         for (const item of await options.cluster.list()) {
           if (hasProject(item.id)) {
-            await options.cluster.clearPoolLabel(item.id);
+            if (item.pool) await options.cluster.clearPoolLabel(item.id);
+            continue;
+          }
+          // No pool label and no registry row: the list lost track of a live
+          // Deployment (registry file not on the volume, or a crashed claim).
+          // Put it back so it can be stopped or deleted. Do not remove it here;
+          // the workspace may already hold a conversation.
+          if (item.pool !== 'creating' && item.pool !== 'idle') {
+            options.trackRelease?.(item);
             continue;
           }
           if (target === 0 || item.templateHash !== hash) {
@@ -192,6 +220,15 @@ export function createPoolEngine(options: {
             templateHash: hash,
             createdAt: item.createdAt,
           });
+        }
+
+        kept.sort(
+          (left, right) =>
+            Date.parse(left.createdAt) - Date.parse(right.createdAt)
+        );
+        while (kept.length > target) {
+          const extra = kept.pop();
+          if (extra) await options.cluster.deleteRelease(extra.id);
         }
 
         while (kept.length < target) {
@@ -274,7 +311,23 @@ function getEngine(): PoolEngine {
       poolSize: () => config.poolSize,
       templateHash: () => currentTemplateHash(),
       slotsPath: slotsFile(),
-      hasProject: (id) => getProject(id) !== null,
+      hasProject: (id) =>
+        usingDatabase() ? dbHasProject(id) : getProject(id) !== null,
+      trackRelease: (item) => {
+        if (usingDatabase()) return;
+        if (getProject(item.id)) return;
+        const now = new Date().toISOString();
+        const record: ProjectRecord = {
+          id: item.id,
+          name: `recovered-${item.id.slice(0, 6)}`,
+          releaseName: releaseNameFor(item.id),
+          volumePath: workspaceHostPath(item.id, config.workspaceHostRoot),
+          status: item.ready ? 'running' : 'pending',
+          createdAt: item.createdAt || now,
+          updatedAt: now,
+        };
+        upsertProject(record);
+      },
     });
   }
   return engine;
@@ -317,8 +370,10 @@ async function promote(ids: string[]): Promise<void> {
   );
 }
 
-export function acquireIdle(): Promise<{ id: string; createdAt: string } | null> {
-  return getEngine().acquire();
+export function acquireIdle(
+  commit?: (claimed: { id: string; createdAt: string }) => Promise<void>
+): Promise<{ id: string; createdAt: string } | null> {
+  return getEngine().acquire(commit);
 }
 
 export function poolStatus(): { target: number; idle: number; creating: number } {

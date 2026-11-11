@@ -173,11 +173,16 @@ export function deploymentTemplateHash(dep: k8s.V1Deployment): string {
     .map((volume) => `${volume.name}:hp=${volume.hostPath?.path ?? ''}`)
     .sort()
     .join('|');
+  const envFrom = (container?.envFrom ?? [])
+    .map((source) => source.secretRef?.name ?? source.configMapRef?.name ?? '')
+    .sort()
+    .join(',');
   const key = [
     container?.image ?? '',
     commandKey(container?.command),
     sortedMountKey(container?.volumeMounts),
     extraVolumes,
+    envFrom,
   ].join('\n');
   return createHash('sha256').update(key).digest('hex').slice(0, 16);
 }
@@ -225,6 +230,12 @@ export function buildDeployment(
       {
         secretRef: {
           name: config.agentEnvSecret,
+          optional: true,
+        },
+      },
+      {
+        secretRef: {
+          name: 'sandbox-data',
           optional: true,
         },
       },
@@ -328,6 +339,12 @@ export function deploymentNeedsReconcile(
   ) {
     return true;
   }
+  const envFromKey = (container: k8s.V1Container | undefined) =>
+    (container?.envFrom ?? [])
+      .map((source) => source.secretRef?.name ?? '')
+      .sort()
+      .join(',');
+  if (envFromKey(liveContainer) !== envFromKey(desiredContainer)) return true;
   return false;
 }
 

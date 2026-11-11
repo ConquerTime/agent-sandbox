@@ -3,6 +3,13 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { UIMessage } from 'ai';
 import { handleChat } from './chat.js';
+import {
+  clearStreamOnBoot,
+  resumeResponse,
+  stopGeneration,
+  streamStatus,
+  sweepStaleStream,
+} from './chat-stream.js';
 import { loadMessages } from './messages.js';
 import { startPreview } from './preview.js';
 import { getWorkspaceDir } from './workspace.js';
@@ -25,6 +32,17 @@ app.get('/api/health', (c) =>
 
 app.get('/api/messages', (c) => c.json({ messages: loadMessages() }));
 
+app.get('/api/chat/stream/status', async (c) => {
+  return c.json(await streamStatus());
+});
+
+app.get('/api/chat/stream', async () => resumeResponse());
+
+app.post('/api/chat/stop', async (c) => {
+  await stopGeneration();
+  return c.json({ stopped: true });
+});
+
 app.post('/api/chat', async (c) => {
   try {
     const body = (await c.req.json()) as {
@@ -39,9 +57,24 @@ app.post('/api/chat', async (c) => {
   }
 });
 
-startPreview(previewPort);
+async function main() {
+  try {
+    await clearStreamOnBoot();
+  } catch (error) {
+    console.warn('[resume] boot clear failed', error);
+  }
 
-serve({ fetch: app.fetch, port: agentPort }, (info) => {
-  console.log(`[agent] listening on http://0.0.0.0:${info.port}`);
-  console.log(`[agent] workspace: ${getWorkspaceDir()}`);
-});
+  startPreview(previewPort);
+
+  serve({ fetch: app.fetch, port: agentPort }, (info) => {
+    console.log(`[agent] listening on http://0.0.0.0:${info.port}`);
+    console.log(`[agent] workspace: ${getWorkspaceDir()}`);
+    setInterval(() => {
+      sweepStaleStream().catch((error: unknown) => {
+        console.warn('[resume] sweep failed', error);
+      });
+    }, 60_000);
+  });
+}
+
+void main();

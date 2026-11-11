@@ -13,7 +13,7 @@ const OTHER = 'tmpl-stale';
 
 function slot(
   id: string,
-  pool: 'creating' | 'idle' = 'idle',
+  pool: 'creating' | 'idle' | null = 'idle',
   templateHash = HASH,
   createdAt = '2026-11-11T00:00:00.000Z'
 ): PoolDeployment {
@@ -46,8 +46,8 @@ function memoryCluster(seed: PoolDeployment[] = []): PoolCluster & {
       if (found) found.pool = 'idle';
     },
     async clearPoolLabel(id: string) {
-      const index = deployments.findIndex((item) => item.id === id);
-      if (index >= 0) deployments.splice(index, 1);
+      const found = deployments.find((item) => item.id === id);
+      if (found) found.pool = null;
     },
     async deleteRelease(id: string) {
       deleted.push(id);
@@ -78,6 +78,7 @@ describe('pod pool engine', () => {
       projects?: Set<string>;
       ids?: string[];
       slotsPath?: string;
+      tracked?: string[];
     } = {}
   ) {
     const dir = options.slotsPath
@@ -106,6 +107,9 @@ describe('pod pool engine', () => {
         return id;
       },
       hasProject: (id) => projects.has(id),
+      trackRelease: (item) => {
+        options.tracked?.push(item.id);
+      },
     });
     return { engine, slotsPath };
   }
@@ -121,7 +125,9 @@ describe('pod pool engine', () => {
       createdAt: '2026-11-11T00:00:00.000Z',
     });
     expect(engine.status()).toEqual({ target: 1, idle: 0, creating: 0 });
-    expect(cluster.deployments.map((item) => item.id)).not.toContain('idle-1');
+    expect(cluster.deployments.find((item) => item.id === 'idle-1')?.pool).toBe(
+      null
+    );
   });
 
   it('deletes an idle pod that fails health and tries the next one', async () => {
@@ -262,8 +268,51 @@ describe('pod pool engine', () => {
     await engine.reconcile();
 
     expect(cluster.deleted).toEqual([]);
-    expect(cluster.deployments.map((item) => item.id)).not.toContain('owned');
+    expect(cluster.deployments.find((item) => item.id === 'owned')?.pool).toBe(
+      null
+    );
     expect(cluster.created).toEqual(['replacement']);
+  });
+
+  it('tracks a deployment that is neither a project nor a pool pod', async () => {
+    const cluster = memoryCluster([
+      slot('orphan', null, '', '2026-11-11T00:00:00.000Z'),
+      slot('keep-idle', 'idle', HASH, '2026-11-11T00:01:00.000Z'),
+    ]);
+    const tracked: string[] = [];
+    const { engine } = engineFor(cluster, {
+      poolSize: 1,
+      ids: ['should-not-create'],
+      tracked,
+    });
+
+    await engine.reconcile();
+
+    expect(tracked).toEqual(['orphan']);
+    expect(cluster.deleted).toEqual([]);
+    expect(cluster.deployments.map((item) => item.id)).toEqual([
+      'orphan',
+      'keep-idle',
+    ]);
+    expect(cluster.created).toEqual([]);
+    expect(engine.status()).toEqual({ target: 1, idle: 1, creating: 0 });
+  });
+
+  it('drops idle pods above the target and keeps the oldest', async () => {
+    const cluster = memoryCluster([
+      slot('older', 'idle', HASH, '2026-11-11T00:00:00.000Z'),
+      slot('newer', 'idle', HASH, '2026-11-11T00:02:00.000Z'),
+    ]);
+    const { engine } = engineFor(cluster, {
+      poolSize: 1,
+      ids: ['should-not-create'],
+    });
+
+    await engine.reconcile();
+
+    expect(cluster.deleted).toEqual(['newer']);
+    expect(cluster.created).toEqual([]);
+    expect(engine.status()).toEqual({ target: 1, idle: 1, creating: 0 });
   });
 
   it('deletes idle pods when the pool is turned off and does not claim them', async () => {
