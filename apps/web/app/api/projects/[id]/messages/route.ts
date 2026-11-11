@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getPodServerUrl } from '@/lib/pod';
+import { proxyToAgent } from '@/lib/agent-proxy';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,10 +9,9 @@ export async function GET(
 ) {
   const { id } = await context.params;
   try {
-    const upstream = await fetch(
-      `${getPodServerUrl()}/p/${id}/agent/api/messages`,
-      { cache: 'no-store' }
-    );
+    const upstream = await proxyToAgent(id, '/api/messages', {
+      cache: 'no-store',
+    });
     const data = (await upstream.json().catch(() => null)) as {
       messages?: unknown;
       error?: string;

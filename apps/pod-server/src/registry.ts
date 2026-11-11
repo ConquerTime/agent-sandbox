@@ -8,6 +8,8 @@ export type ProjectStatus = 'running' | 'stopped' | 'pending' | 'error';
 export interface ProjectRecord {
   id: string;
   name: string;
+  /** Owning organization; missing on legacy records (treated as invisible). */
+  orgId?: string;
   /** K8s Deployment / Service name (`as-agent-<id>`). */
   releaseName: string;
   volumePath: string;
@@ -39,6 +41,7 @@ function normalizeRecord(
   return {
     id: raw.id,
     name: raw.name,
+    orgId: raw.orgId,
     releaseName:
       raw.releaseName || raw.containerName || releaseNameFor(raw.id),
     volumePath: raw.volumePath,
@@ -69,8 +72,22 @@ export function listProjects(): ProjectRecord[] {
   );
 }
 
+export function listProjectsForOrg(orgId: string): ProjectRecord[] {
+  return listProjects().filter((project) => project.orgId === orgId);
+}
+
 export function getProject(id: string): ProjectRecord | null {
   return readAll().find((project) => project.id === id) ?? null;
+}
+
+/** Returns the project only when it belongs to the organization. */
+export function getProjectForOrg(
+  id: string,
+  orgId: string
+): ProjectRecord | null {
+  const project = getProject(id);
+  if (!project || project.orgId !== orgId) return null;
+  return project;
 }
 
 export function upsertProject(record: ProjectRecord): ProjectRecord {

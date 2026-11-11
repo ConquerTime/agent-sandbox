@@ -1,4 +1,4 @@
-import { getPodServerUrl, readyProject } from '@/lib/pod';
+import { proxyToAgent } from '@/lib/agent-proxy';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -10,21 +10,14 @@ export async function POST(request: Request) {
     return Response.json({ error: 'projectId is required' }, { status: 400 });
   }
 
-  await readyProject(projectId);
-
-  const upstream = await fetch(
-    `${getPodServerUrl()}/p/${projectId}/agent/api/chat`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messages: body.messages,
-        message: body.message,
-      }),
-    }
-  );
+  const upstream = await proxyToAgent(projectId, '/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: body.messages,
+      message: body.message,
+    }),
+  });
 
   return new Response(upstream.body, {
     status: upstream.status,

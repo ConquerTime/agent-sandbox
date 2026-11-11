@@ -38,29 +38,39 @@ describe('createProject pool claim', () => {
 
   it('returns the idle pod without creating a release', async () => {
     const used = deps({
-      acquire: async () => ({
-        id: 'pooledidle01',
-        createdAt: '2026-11-11T00:00:00.000Z',
-      }),
+      acquire: async (commit) => {
+        const slot = {
+          id: 'pooledidle01',
+          createdAt: '2026-11-11T00:00:00.000Z',
+        };
+        await commit(slot);
+        return slot;
+      },
     });
 
-    const project = await createProject({ name: 'from pool' }, used);
+    const project = await createProject(
+      { name: 'from pool', orgId: 'org-1' },
+      used
+    );
 
     expect(project.id).toBe('pooledidle01');
     expect(project.name).toBe('from pool');
+    expect(project.orgId).toBe('org-1');
     expect(project.status).toBe('running');
     expect(used.createAndStart).not.toHaveBeenCalled();
     expect(used.waitHealthy).not.toHaveBeenCalled();
     expect(used.replenish).toHaveBeenCalledOnce();
     expect(listProjects().map((item) => item.id)).toEqual(['pooledidle01']);
+    expect(getProject('pooledidle01')?.orgId).toBe('org-1');
   });
 
   it('falls back to a cold create when the pool is empty', async () => {
     const used = deps();
 
-    const project = await createProject({ name: 'cold' }, used);
+    const project = await createProject({ name: 'cold', orgId: 'org-1' }, used);
 
     expect(project.status).toBe('running');
+    expect(project.orgId).toBe('org-1');
     expect(used.createAndStart).toHaveBeenCalledOnce();
     expect(used.waitHealthy).toHaveBeenCalledWith(project.id);
     expect(getProject(project.id)?.status).toBe('running');
@@ -69,10 +79,14 @@ describe('createProject pool claim', () => {
 
   it('deletes the claimed release when saving the project record fails', async () => {
     const used = deps({
-      acquire: async () => ({
-        id: 'pooledidle01',
-        createdAt: '2026-11-11T00:00:00.000Z',
-      }),
+      acquire: async (commit) => {
+        const slot = {
+          id: 'pooledidle01',
+          createdAt: '2026-11-11T00:00:00.000Z',
+        };
+        await commit(slot);
+        return slot;
+      },
     });
     const saveError = new Error('disk full');
     vi.spyOn(await import('./registry.js'), 'upsertProject').mockImplementation(
@@ -81,9 +95,9 @@ describe('createProject pool claim', () => {
       }
     );
 
-    await expect(createProject({ name: 'from pool' }, used)).rejects.toThrow(
-      'disk full'
-    );
+    await expect(
+      createProject({ name: 'from pool', orgId: 'org-1' }, used)
+    ).rejects.toThrow('disk full');
     expect(used.removeRelease).toHaveBeenCalledWith('pooledidle01');
     expect(getProject('pooledidle01')).toBeNull();
   });

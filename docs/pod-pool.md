@@ -99,7 +99,7 @@ pod-server 监听端口之后启动一次对账，之后每次领用或冷创建
 - `creating` 超过 3 分钟仍不健康：删除并计入失败，下一轮再补。
 - 库存（`creating` + `idle`）小于目标：按差额调用现有的 `createAndStartRelease`，打上 `creating`。
 
-`POD_POOL_SIZE` 默认 **1**。本地 OrbStack 上多一只常驻 Agent（request 100m CPU / 256Mi 内存，limit 2Gi）就够把下一次创建变成领用。默认不把笔记本铺满。测试和显式关闭时设 `0`，对账会删掉剩余空闲 Pod，已领用的项目不动。
+`POD_POOL_SIZE` 默认 **5**。空闲池全局共享，不按组织分池；任一组织创建项目都从同一口池领用，领用后在 `projects.json` 写上该组织的 `orgId`。5 只空闲 Agent 的 request 合计约 500m CPU / 1.25Gi 内存（每只 request 100m / 256Mi，limit 2Gi）。测试和显式关闭时设 `0`，对账会删掉剩余空闲 Pod，已领用的项目不动。
 
 ## 和现有生命周期的关系
 
@@ -117,7 +117,7 @@ pod-server 监听端口之后启动一次对账，之后每次领用或冷创建
 {
   "status": "ok",
   "runtime": "kubernetes",
-  "pool": { "target": 1, "idle": 1, "creating": 0 }
+  "pool": { "target": 5, "idle": 5, "creating": 0 }
 }
 ```
 
@@ -139,7 +139,7 @@ pod-server 监听端口之后启动一次对账，之后每次领用或冷创建
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `POD_POOL_SIZE` | `1` | 目标库存（`creating` + `idle`）。`0` 关闭并清掉空闲 Pod |
+| `POD_POOL_SIZE` | `5` | 目标库存（`creating` + `idle`）。`0` 关闭并清掉空闲 Pod |
 
 不增加新的超时。进池仍用现有的 health 轮询（1 秒间隔，上限 120 秒）。
 

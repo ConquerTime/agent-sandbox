@@ -13,7 +13,8 @@ import { acquireIdle, newProjectId, scheduleReplenish } from './pool.js';
 import {
   deleteProject,
   getProject,
-  listProjects,
+  getProjectForOrg,
+  listProjectsForOrg,
   type ProjectRecord,
   projectUrls,
   upsertProject,
@@ -30,8 +31,16 @@ function volumePathFor(projectId: string): string {
   return workspaceHostPath(projectId, volumeRoot());
 }
 
+function notFound(projectId: string): Error {
+  return Object.assign(new Error(`Project not found: ${projectId}`), {
+    status: 404,
+  });
+}
+
 export interface CreateProjectDeps {
-  acquire: () => Promise<{ id: string; createdAt: string } | null>;
+  acquire: (
+    commit: (claimed: { id: string; createdAt: string }) => Promise<void>
+  ) => Promise<{ id: string; createdAt: string } | null>;
   createAndStart: (projectId: string) => Promise<void>;
   waitHealthy: (projectId: string) => Promise<void>;
   removeRelease: (projectId: string) => Promise<void>;
@@ -39,7 +48,7 @@ export interface CreateProjectDeps {
 }
 
 const defaultCreateDeps: CreateProjectDeps = {
-  acquire: () => acquireIdle(),
+  acquire: (commit) => acquireIdle(commit),
   createAndStart: async (projectId) => {
     await createAndStartRelease({ projectId });
   },
@@ -53,6 +62,7 @@ export function toPublicProject(record: ProjectRecord) {
   return {
     id: record.id,
     name: record.name,
+    orgId: record.orgId,
     status: record.status,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -62,35 +72,43 @@ export function toPublicProject(record: ProjectRecord) {
   };
 }
 
-export function listPublicProjects() {
-  return listProjects().map(toPublicProject);
+export function listPublicProjects(orgId: string) {
+  return listProjectsForOrg(orgId).map(toPublicProject);
 }
 
 export async function createProject(
-  input: { name?: string },
+  input: { name?: string; orgId: string },
   deps: CreateProjectDeps = defaultCreateDeps
 ): Promise<ReturnType<typeof toPublicProject>> {
+  if (!input.orgId) {
+    throw Object.assign(new Error('orgId is required'), { status: 400 });
+  }
+
   try {
-    const claimed = await deps.acquire();
-    if (claimed) {
+    let saved: ProjectRecord | null = null;
+    const claimed = await deps.acquire(async (slot) => {
       const now = new Date().toISOString();
       const record: ProjectRecord = {
-        id: claimed.id,
-        name: input.name?.trim() || `project-${claimed.id.slice(0, 6)}`,
-        releaseName: releaseNameFor(claimed.id),
-        volumePath: volumePathFor(claimed.id),
+        id: slot.id,
+        name: input.name?.trim() || `project-${slot.id.slice(0, 6)}`,
+        orgId: input.orgId,
+        releaseName: releaseNameFor(slot.id),
+        volumePath: volumePathFor(slot.id),
         status: 'running',
         createdAt: now,
         updatedAt: now,
       };
       try {
         upsertProject(record);
+        saved = record;
       } catch (error) {
-        await deps.removeRelease(claimed.id);
+        await deps.removeRelease(slot.id);
         rmSync(record.volumePath, { recursive: true, force: true });
         throw error;
       }
-      return toPublicProject(record);
+    });
+    if (claimed && saved) {
+      return toPublicProject(saved);
     }
 
     const id = newProjectId();
@@ -102,6 +120,7 @@ export async function createProject(
     const record: ProjectRecord = {
       id,
       name: input.name?.trim() || `project-${id.slice(0, 6)}`,
+      orgId: input.orgId,
       releaseName: releaseNameFor(id),
       volumePath,
       status: 'pending',
@@ -130,13 +149,14 @@ export async function createProject(
 }
 
 export async function ensureReady(
-  projectId: string
+  projectId: string,
+  orgId?: string
 ): Promise<ReturnType<typeof toPublicProject>> {
-  const record = getProject(projectId);
-  if (!record) {
-    throw Object.assign(new Error(`Project not found: ${projectId}`), {
-      status: 404,
-    });
+  const record = orgId
+    ? getProjectForOrg(projectId, orgId)
+    : getProject(projectId);
+  if (!record || (orgId && record.orgId !== orgId)) {
+    throw notFound(projectId);
   }
 
   try {
@@ -157,13 +177,12 @@ export async function ensureReady(
 }
 
 export async function stopProject(
-  projectId: string
+  projectId: string,
+  orgId: string
 ): Promise<ReturnType<typeof toPublicProject>> {
-  const record = getProject(projectId);
+  const record = getProjectForOrg(projectId, orgId);
   if (!record) {
-    throw Object.assign(new Error(`Project not found: ${projectId}`), {
-      status: 404,
-    });
+    throw notFound(projectId);
   }
 
   await stopRelease(projectId);
@@ -173,15 +192,26 @@ export async function stopProject(
   return toPublicProject(record);
 }
 
-export async function destroyProject(projectId: string): Promise<void> {
-  const record = getProject(projectId);
+export async function destroyProject(
+  projectId: string,
+  orgId: string
+): Promise<void> {
+  const record = getProjectForOrg(projectId, orgId);
   if (!record) {
-    throw Object.assign(new Error(`Project not found: ${projectId}`), {
-      status: 404,
-    });
+    throw notFound(projectId);
   }
 
   await removeRelease(projectId);
   rmSync(record.volumePath, { recursive: true, force: true });
+  const canonical = volumePathFor(projectId);
+  if (canonical !== record.volumePath) {
+    rmSync(canonical, { recursive: true, force: true });
+  }
   deleteProject(projectId);
+}
+
+export function getPublicProjectForOrg(projectId: string, orgId: string) {
+  const record = getProjectForOrg(projectId, orgId);
+  if (!record) return null;
+  return toPublicProject(record);
 }

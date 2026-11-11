@@ -33,7 +33,7 @@ export const config = {
    * packages/shared from this repo root and run the polling supervisor.
    */
   agentDevRoot: resolveAgentDevRoot(),
-  /** Idle warm pods kept ready for the next create. `0` disables the pool. */
+  /** Idle warm pods kept ready for the next create. Default 5; `0` disables the pool. */
   get poolSize(): number {
     return resolvePoolSize();
   },
@@ -41,9 +41,9 @@ export const config = {
 
 function resolvePoolSize(): number {
   const raw = process.env.POD_POOL_SIZE;
-  if (raw === undefined || raw.trim() === '') return 1;
+  if (raw === undefined || raw.trim() === '') return 5;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0) return 1;
+  if (!Number.isInteger(value) || value < 0) return 5;
   return value;
 }
 

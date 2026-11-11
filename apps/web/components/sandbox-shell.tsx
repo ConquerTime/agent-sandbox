@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChatPanel } from './chat-panel';
 import { PreviewPanel } from './preview-panel';
 import { ProjectSidebar } from './project-sidebar';
-import type { Project } from './types';
+import type { AuthUser, Project } from './types';
 
 type RushMessage = UIMessage<unknown, RushUIDataTypes, UITools>;
 
@@ -43,6 +43,22 @@ export function SandboxShell() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+
+  const refreshUser = useCallback(async () => {
+    const response = await fetch('/api/auth/me');
+    const data = (await response.json()) as {
+      user?: AuthUser;
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load session');
+    }
+    setUser(data.user || null);
+    return data.user || null;
+  }, []);
 
   const refreshProjects = useCallback(async () => {
     const response = await fetch('/api/projects');
@@ -53,10 +69,10 @@ export function SandboxShell() {
   }, []);
 
   useEffect(() => {
-    refreshProjects().catch((err) =>
+    Promise.all([refreshUser(), refreshProjects()]).catch((err) =>
       setError(err instanceof Error ? err.message : String(err))
     );
-  }, [refreshProjects]);
+  }, [refreshProjects, refreshUser]);
 
   const transport = useMemo(() => {
     if (!selectedId) return undefined;
@@ -155,6 +171,51 @@ export function SandboxShell() {
     }
   }
 
+  async function handleLogout() {
+    setBusy(true);
+    setError(null);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateInvite() {
+    setInviteBusy(true);
+    setError(null);
+    setInviteMessage(null);
+    try {
+      const response = await fetch('/api/org/invites', { method: 'POST' });
+      const data = (await response.json()) as {
+        invite?: { code: string; expiresAt: string };
+        error?: string;
+      };
+      if (!response.ok || !data.invite) {
+        throw new Error(data.error || 'Failed to create invite');
+      }
+      setInviteMessage(
+        `Invite code: ${data.invite.code} (expires ${new Date(
+          data.invite.expiresAt
+        ).toLocaleString()})`
+      );
+      try {
+        await navigator.clipboard.writeText(data.invite.code);
+        setInviteMessage(
+          (current) => `${current || data.invite!.code} · copied`
+        );
+      } catch {
+        // Clipboard may be unavailable; still show the code.
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInviteBusy(false);
+    }
+  }
+
   async function handleStop() {
     if (!selectedId) return;
     setBusy(true);
@@ -211,8 +272,13 @@ export function SandboxShell() {
           projects={projects}
           selectedId={selectedId}
           busy={busy}
+          user={user}
+          inviteBusy={inviteBusy}
+          inviteMessage={inviteMessage}
           onSelect={setSelectedId}
           onCreate={() => void handleCreate()}
+          onLogout={() => void handleLogout()}
+          onCreateInvite={() => void handleCreateInvite()}
         />
         <ChatPanel
           project={selected}

@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { isReleaseRunning, resolveUpstreamBase } from './k8s/runtime.js';
 import { ensureReady } from './projects.js';
-import { getProject } from './registry.js';
+import { getProjectForOrg } from './registry.js';
 
 function stripPrefix(pathname: string, prefix: string): string {
   const rest = pathname.slice(prefix.length);
@@ -11,9 +11,10 @@ function stripPrefix(pathname: string, prefix: string): string {
 
 async function resolveUpstream(
   projectId: string,
+  orgId: string,
   kind: 'agent' | 'preview'
 ): Promise<{ targetBase: string }> {
-  const record = getProject(projectId);
+  const record = getProjectForOrg(projectId, orgId);
   if (!record) {
     throw Object.assign(new Error(`Project not found: ${projectId}`), {
       status: 404,
@@ -23,7 +24,7 @@ async function resolveUpstream(
   // Only scale up when the release is not already ready — avoids a Scale
   // replace on every proxied chat/preview chunk.
   if (!(await isReleaseRunning(projectId))) {
-    await ensureReady(projectId);
+    await ensureReady(projectId, orgId);
   }
 
   return { targetBase: resolveUpstreamBase(projectId, kind) };
@@ -32,9 +33,10 @@ async function resolveUpstream(
 export async function proxyToProject(
   c: Context,
   projectId: string,
-  kind: 'agent' | 'preview'
+  kind: 'agent' | 'preview',
+  orgId: string
 ): Promise<Response> {
-  const { targetBase } = await resolveUpstream(projectId, kind);
+  const { targetBase } = await resolveUpstream(projectId, orgId, kind);
   const prefix = `/p/${projectId}/${kind}`;
   const path = stripPrefix(c.req.path, prefix);
   const search = new URL(c.req.url).search;
@@ -45,6 +47,7 @@ export async function proxyToProject(
   headers.set('x-forwarded-host', c.req.header('host') || 'localhost');
   headers.set('x-forwarded-proto', 'http');
   headers.set('x-project-id', projectId);
+  headers.set('x-org-id', orgId);
 
   const init: RequestInit = {
     method: c.req.method,
